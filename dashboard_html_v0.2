@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Run Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
+  :root{--bg:#0a0a0f;--surface:#12121a;--border:#1e1e2e;--accent:#00ff88;--accent2:#ff6b35;--accent3:#4d9fff;--text:#e8e8f0;--muted:#5a5a7a;}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;overflow-x:hidden;}
+  body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(ellipse at 20% 20%,rgba(0,255,136,.04) 0%,transparent 50%),radial-gradient(ellipse at 80% 80%,rgba(77,159,255,.04) 0%,transparent 50%);pointer-events:none;z-index:0;}
+  .container{max-width:1200px;margin:0 auto;padding:40px 24px;position:relative;z-index:1;}
+  header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:48px;border-bottom:1px solid var(--border);padding-bottom:24px;}
+  h1{font-family:'Bebas Neue',sans-serif;font-size:clamp(48px,8vw,80px);letter-spacing:4px;line-height:.9;background:linear-gradient(135deg,var(--accent) 0%,var(--accent3) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+  .header-meta{text-align:right;font-family:'DM Mono',monospace;font-size:12px;color:var(--muted);letter-spacing:1px;}
+  .header-meta span{display:block;}.header-meta strong{color:var(--accent);font-size:22px;}
+  .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:36px;}
+  .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 16px;position:relative;overflow:hidden;transition:transform .2s,border-color .2s;}
+  .stat-card:hover{transform:translateY(-2px);border-color:var(--accent);}
+  .stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+  .stat-card.green::before{background:var(--accent);}.stat-card.orange::before{background:var(--accent2);}.stat-card.blue::before{background:var(--accent3);}
+  .stat-label{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:8px;}
+  .stat-value{font-family:'Bebas Neue',sans-serif;font-size:36px;letter-spacing:1px;line-height:1;}
+  .stat-card.green .stat-value{color:var(--accent);}.stat-card.orange .stat-value{color:var(--accent2);}.stat-card.blue .stat-value{color:var(--accent3);}
+  .stat-sub{font-size:11px;color:var(--muted);margin-top:4px;}
+  .charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
+  @media(max-width:700px){.charts-grid{grid-template-columns:1fr;}}
+  .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;}
+  .chart-card.wide{grid-column:1/-1;}
+  .chart-title{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:20px;}
+  .chart-wrap{position:relative;height:200px;}.chart-wrap.tall{height:280px;}
+  .table-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;margin-top:16px;overflow-x:auto;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);}
+  td{padding:10px 12px;border-bottom:1px solid rgba(30,30,46,.5);font-family:'DM Mono',monospace;font-size:12px;}
+  tr:last-child td{border-bottom:none;}tr:hover td{background:rgba(255,255,255,.02);}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:500;}
+  .pill.hard{background:rgba(255,107,53,.2);color:var(--accent2);}.pill.moderate{background:rgba(77,159,255,.2);color:var(--accent3);}.pill.allout{background:rgba(255,0,128,.2);color:#ff0080;}
+  .pace-fast{color:var(--accent);}.pace-slow{color:var(--muted);}
+  .add-section{margin-top:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;}
+  .add-title{font-family:'Bebas Neue',sans-serif;font-size:24px;letter-spacing:2px;color:var(--accent);margin-bottom:20px;}
+  .form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:16px;}
+  .form-group{display:flex;flex-direction:column;gap:6px;}
+  label{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;}
+  input,select{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 12px;font-family:'DM Mono',monospace;font-size:13px;outline:none;transition:border-color .2s;}
+  input:focus,select:focus{border-color:var(--accent);}select option{background:var(--bg);}
+  .btn{background:var(--accent);color:var(--bg);border:none;border-radius:6px;padding:10px 24px;font-family:'DM Mono',monospace;font-size:12px;letter-spacing:2px;text-transform:uppercase;cursor:pointer;font-weight:500;transition:opacity .2s,transform .1s;}
+  .btn:hover{opacity:.85;transform:translateY(-1px);}.btn:active{transform:translateY(0);}
+  .success-msg{display:none;color:var(--accent);font-family:'DM Mono',monospace;font-size:12px;margin-left:16px;letter-spacing:1px;}
+  .race-row td{background:rgba(0,255,136,.05)!important;}.race-marker{color:var(--accent);font-size:10px;margin-left:4px;}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>RUN<br>TRACKER</h1>
+    <div class="header-meta">
+      <span>ALL RUNS LOADED</span>
+      <strong id="run-count">72</strong>
+      <span>RUNS TRACKED</span>
+      <span style="margin-top:4px">NOV 2024 — MAR 2025</span>
+    </div>
+  </header>
+  <div class="stat-grid" id="stat-grid"></div>
+  <div class="charts-grid">
+    <div class="chart-card wide"><div class="chart-title">— Distance Per Run (mi)</div><div class="chart-wrap tall"><canvas id="distChart"></canvas></div></div>
+    <div class="chart-card"><div class="chart-title">— Avg Pace (min/mi) · lower = faster ↓</div><div class="chart-wrap"><canvas id="paceChart"></canvas></div></div>
+    <div class="chart-card"><div class="chart-title">— Avg Heart Rate (bpm)</div><div class="chart-wrap"><canvas id="hrChart"></canvas></div></div>
+    <div class="chart-card"><div class="chart-title">— Active Calories Burned</div><div class="chart-wrap"><canvas id="calChart"></canvas></div></div>
+    <div class="chart-card"><div class="chart-title">— Avg Cadence (spm)</div><div class="chart-wrap"><canvas id="cadChart"></canvas></div></div>
+  </div>
+  <div class="table-card">
+    <div class="chart-title" style="margin-bottom:16px">— All Runs (most recent first)</div>
+    <table><thead><tr><th>Date</th><th>Dist</th><th>Time</th><th>Pace</th><th>HR</th><th>Cal</th><th>Cad</th><th>Effort</th></tr></thead>
+    <tbody id="run-table"></tbody></table>
+  </div>
+  <div class="add-section">
+    <div class="add-title">+ Log New Run</div>
+    <div class="form-grid">
+      <div class="form-group"><label>Date</label><input type="date" id="f-date"></div>
+      <div class="form-group"><label>Distance (mi)</label><input type="number" step="0.01" id="f-dist" placeholder="2.50"></div>
+      <div class="form-group"><label>Time</label><input type="text" id="f-time" placeholder="0:25:00"></div>
+      <div class="form-group"><label>Pace</label><input type="text" id="f-pace" placeholder="11'30&quot;"></div>
+      <div class="form-group"><label>Avg HR</label><input type="number" id="f-hr" placeholder="160"></div>
+      <div class="form-group"><label>Active Cal</label><input type="number" id="f-cal" placeholder="200"></div>
+      <div class="form-group"><label>Cadence</label><input type="number" id="f-cad" placeholder="165"></div>
+      <div class="form-group"><label>Effort</label><select id="f-effort"><option>Moderate</option><option>Hard</option><option>Easy</option><option>All Out</option></select></div>
+    </div>
+    <button class="btn" onclick="addRun()">Add Run</button>
+    <span class="success-msg" id="success-msg">✓ Run logged!</span>
+  </div>
+</div>
+<script>
+let runs=[
+  // NOV 2024
+  {date:"2024-11-03",dist:1.04,time:"0:14:10",pace:"13'32\"",paceMin:13.53,hr:164,cal:93,cad:152,effort:"Hard"},
+  {date:"2024-11-04",dist:1.03,time:"0:12:45",pace:"12'19\"",paceMin:12.32,hr:174,cal:94,cad:155,effort:"Hard"},
+  {date:"2024-11-05",dist:2.02,time:"0:26:17",pace:"12'59\"",paceMin:12.98,hr:174,cal:189,cad:147,effort:"Hard"},
+  {date:"2024-11-07",dist:1.08,time:"0:14:17",pace:"13'13\"",paceMin:13.22,hr:169,cal:93,cad:151,effort:"Hard"},
+  {date:"2024-11-08",dist:1.08,time:"0:13:57",pace:"12'52\"",paceMin:12.87,hr:169,cal:96,cad:150,effort:"Hard"},
+  {date:"2024-11-09",dist:1.64,time:"0:21:24",pace:"13'03\"",paceMin:13.05,hr:167,cal:152,cad:149,effort:"Hard"},
+  {date:"2024-11-10",dist:1.14,time:"0:14:39",pace:"12'50\"",paceMin:12.83,hr:161,cal:99,cad:155,effort:"Moderate"},
+  {date:"2024-11-11",dist:1.18,time:"0:14:58",pace:"12'36\"",paceMin:12.60,hr:157,cal:107,cad:155,effort:"Moderate"},
+  {date:"2024-11-12",dist:2.10,time:"0:26:32",pace:"12'38\"",paceMin:12.63,hr:170,cal:199,cad:153,effort:"Moderate"},
+  {date:"2024-11-13",dist:1.09,time:"0:14:27",pace:"13'10\"",paceMin:13.17,hr:168,cal:101,cad:152,effort:"Hard"},
+  {date:"2024-11-18",dist:1.02,time:"0:13:28",pace:"13'12\"",paceMin:13.20,hr:162,cal:95,cad:150,effort:"Hard"},
+  {date:"2024-11-22",dist:2.33,time:"0:40:18",pace:"17'17\"",paceMin:17.28,hr:167,cal:191,cad:127,effort:"Hard"},
+  {date:"2024-11-23",dist:1.04,time:"0:12:51",pace:"12'20\"",paceMin:12.33,hr:167,cal:91,cad:153,effort:"Hard"},
+  {date:"2024-11-25",dist:3.51,time:"0:44:54",pace:"12'46\"",paceMin:12.77,hr:173,cal:327,cad:153,effort:"Hard"},
+  {date:"2024-11-26",dist:1.50,time:"0:20:04",pace:"13'19\"",paceMin:13.32,hr:171,cal:138,cad:150,effort:"Hard"},
+  {date:"2024-11-28",dist:3.14,time:"0:40:32",pace:"12'52\"",paceMin:12.87,hr:168,cal:279,cad:154,effort:"Hard"},
+  {date:"2024-11-29",dist:1.30,time:"0:15:34",pace:"11'57\"",paceMin:11.95,hr:167,cal:113,cad:158,effort:"Hard"},
+  // DEC 2024
+  {date:"2024-12-02",dist:1.14,time:"0:12:53",pace:"11'15\"",paceMin:11.25,hr:174,cal:99,cad:162,effort:"Hard"},
+  {date:"2024-12-04",dist:2.02,time:"0:24:42",pace:"12'13\"",paceMin:12.22,hr:179,cal:173,cad:159,effort:"Hard"},
+  {date:"2024-12-08",dist:2.03,time:"0:22:38",pace:"11'06\"",paceMin:11.10,hr:175,cal:174,cad:161,effort:"Hard"},
+  {date:"2024-12-09",dist:1.06,time:"0:11:42",pace:"11'02\"",paceMin:11.03,hr:178,cal:91,cad:159,effort:"Moderate"},
+  {date:"2024-12-10",dist:1.11,time:"0:13:27",pace:"12'02\"",paceMin:12.03,hr:169,cal:93,cad:153,effort:"Hard"},
+  {date:"2024-12-14",dist:1.16,time:"0:16:11",pace:"13'57\"",paceMin:13.95,hr:169,cal:99,cad:140,effort:"Hard"},
+  {date:"2024-12-24",dist:3.03,time:"0:36:54",pace:"12'10\"",paceMin:12.17,hr:175,cal:254,cad:154,effort:"Hard"},
+  {date:"2024-12-25",dist:1.05,time:"0:12:53",pace:"12'13\"",paceMin:12.22,hr:171,cal:90,cad:152,effort:"Hard"},
+  {date:"2024-12-29",dist:1.70,time:"0:22:54",pace:"13'26\"",paceMin:13.43,hr:164,cal:146,cad:150,effort:"Hard"},
+  // JAN 2025
+  {date:"2025-01-05",dist:1.52,time:"0:17:33",pace:"11'31\"",paceMin:11.52,hr:169,cal:132,cad:157,effort:"Hard"},
+  {date:"2025-01-06",dist:1.58,time:"0:18:24",pace:"11'37\"",paceMin:11.62,hr:175,cal:138,cad:157,effort:"Hard"},
+  {date:"2025-01-07",dist:1.56,time:"0:17:32",pace:"11'12\"",paceMin:11.20,hr:170,cal:137,cad:160,effort:"Moderate"},
+  {date:"2025-01-08",dist:1.58,time:"0:18:38",pace:"11'47\"",paceMin:11.78,hr:176,cal:138,cad:158,effort:"Hard"},
+  {date:"2025-01-09",dist:1.52,time:"0:17:45",pace:"11'39\"",paceMin:11.65,hr:173,cal:134,cad:159,effort:"Hard"},
+  {date:"2025-01-10",dist:2.55,time:"0:30:06",pace:"11'47\"",paceMin:11.78,hr:175,cal:224,cad:162,effort:"Hard"},
+  {date:"2025-01-12",dist:1.56,time:"0:17:36",pace:"11'13\"",paceMin:11.22,hr:172,cal:134,cad:165,effort:"Hard"},
+  {date:"2025-01-13",dist:1.55,time:"0:17:40",pace:"11'20\"",paceMin:11.33,hr:172,cal:134,cad:174,effort:"Hard"},
+  {date:"2025-01-14",dist:1.61,time:"0:17:51",pace:"11'03\"",paceMin:11.05,hr:173,cal:139,cad:174,effort:"Hard"},
+  {date:"2025-01-15",dist:1.55,time:"0:17:12",pace:"11'06\"",paceMin:11.10,hr:172,cal:133,cad:179,effort:"Hard"},
+  {date:"2025-01-16",dist:1.60,time:"0:17:50",pace:"11'08\"",paceMin:11.13,hr:171,cal:138,cad:178,effort:"Hard"},
+  {date:"2025-01-17",dist:2.56,time:"0:31:33",pace:"12'17\"",paceMin:12.28,hr:163,cal:214,cad:167,effort:"Hard"},
+  {date:"2025-01-20",dist:1.02,time:"0:12:14",pace:"11'56\"",paceMin:11.93,hr:158,cal:90,cad:160,effort:"Hard"},
+  {date:"2025-01-21",dist:1.03,time:"0:11:01",pace:"10'40\"",paceMin:10.67,hr:155,cal:90,cad:163,effort:"Moderate"},
+  {date:"2025-01-22",dist:2.16,time:"0:32:00",pace:"14'48\"",paceMin:14.80,hr:162,cal:185,cad:139,effort:"Hard"},
+  {date:"2025-01-26",dist:2.03,time:"0:21:37",pace:"10'38\"",paceMin:10.63,hr:157,cal:176,cad:161,effort:"Moderate"},
+  {date:"2025-01-27",dist:2.03,time:"0:20:33",pace:"10'05\"",paceMin:10.08,hr:164,cal:179,cad:169,effort:"Hard"},
+  {date:"2025-01-28",dist:2.14,time:"0:21:43",pace:"10'09\"",paceMin:10.15,hr:156,cal:186,cad:167,effort:"Moderate"},
+  {date:"2025-01-29",dist:2.04,time:"0:21:41",pace:"10'38\"",paceMin:10.63,hr:160,cal:176,cad:169,effort:"Moderate"},
+  {date:"2025-01-30",dist:1.02,time:"0:11:06",pace:"10'48\"",paceMin:10.80,hr:151,cal:90,cad:165,effort:"Moderate"},
+  {date:"2025-01-31",dist:4.37,time:"0:51:17",pace:"11'44\"",paceMin:11.73,hr:157,cal:371,cad:161,effort:"Moderate"},
+  // FEB 2025
+  {date:"2025-02-02",dist:2.89,time:"0:30:10",pace:"10'27\"",paceMin:10.45,hr:159,cal:254,cad:163,effort:"Moderate"},
+  {date:"2025-02-03",dist:2.02,time:"0:22:24",pace:"11'05\"",paceMin:11.08,hr:162,cal:178,cad:166,effort:"Moderate"},
+  {date:"2025-02-05",dist:3.29,time:"0:35:41",pace:"10'50\"",paceMin:10.83,hr:165,cal:291,cad:164,effort:"Hard"},
+  {date:"2025-02-18",dist:1.03,time:"0:11:32",pace:"11'06\"",paceMin:11.10,hr:176,cal:90,cad:170,effort:"Moderate"},
+  {date:"2025-02-19",dist:2.58,time:"0:31:49",pace:"12'18\"",paceMin:12.30,hr:171,cal:222,cad:165,effort:"Hard"},
+  // MAR 2025 — original
+  {date:"2025-03-03",dist:2.30,time:"0:28:41",pace:"12'28\"",paceMin:12.47,hr:172,cal:191,cad:164,effort:"Hard"},
+  // MAR 2025 — new batch
+  {date:"2025-03-04",dist:1.63,time:"0:20:40",pace:"12'41\"",paceMin:12.68,hr:162,cal:140,cad:162,effort:"Moderate"},
+  {date:"2025-03-04",dist:1.06,time:"0:17:32",pace:"16'32\"",paceMin:16.53,hr:160,cal:109,cad:120,effort:"Moderate"},
+  {date:"2025-03-09",dist:1.11,time:"0:14:18",pace:"12'51\"",paceMin:12.85,hr:172,cal:95,cad:164,effort:"Hard"},
+  {date:"2025-03-10",dist:1.05,time:"0:18:58",pace:"18'00\"",paceMin:18.00,hr:163,cal:92,cad:167,effort:"Hard"},
+  {date:"2025-03-11",dist:1.22,time:"0:14:41",pace:"12'01\"",paceMin:12.02,hr:179,cal:114,cad:164,effort:"Moderate"},
+  {date:"2025-03-12",dist:1.03,time:"0:14:17",pace:"13'48\"",paceMin:13.80,hr:168,cal:83,cad:160,effort:"Hard"},
+  {date:"2025-03-14",dist:1.18,time:"0:15:21",pace:"13'00\"",paceMin:13.00,hr:170,cal:102,cad:162,effort:"Hard"},
+  {date:"2025-03-15",dist:3.24,time:"0:36:59",pace:"11'24\"",paceMin:11.40,hr:180,cal:289,cad:167,effort:"All Out",race:true},
+  {date:"2025-03-16",dist:1.53,time:"0:20:08",pace:"13'08\"",paceMin:13.13,hr:166,cal:134,cad:160,effort:"Hard"},
+  {date:"2025-03-18",dist:1.01,time:"0:13:37",pace:"13'22\"",paceMin:13.37,hr:150,cal:80,cad:158,effort:"Moderate"},
+  {date:"2025-03-19",dist:1.13,time:"0:15:31",pace:"13'41\"",paceMin:13.68,hr:166,cal:93,cad:159,effort:"Hard"},
+  {date:"2025-03-20",dist:2.52,time:"0:29:54",pace:"11'52\"",paceMin:11.87,hr:183,cal:241,cad:166,effort:"Hard"},
+  {date:"2025-03-21",dist:1.11,time:"0:13:35",pace:"12'12\"",paceMin:12.20,hr:171,cal:97,cad:157,effort:"Hard"},
+  {date:"2025-03-24",dist:1.02,time:"0:13:50",pace:"13'31\"",paceMin:13.52,hr:168,cal:92,cad:163,effort:"Hard"},
+  {date:"2025-03-25",dist:3.69,time:"0:51:35",pace:"13'57\"",paceMin:13.95,hr:158,cal:321,cad:162,effort:"Moderate"},
+  {date:"2025-03-26",dist:3.39,time:"0:52:05",pace:"15'20\"",paceMin:15.33,hr:156,cal:300,cad:157,effort:"Moderate"},
+  {date:"2025-03-29",dist:3.26,time:"0:48:52",pace:"14'58\"",paceMin:14.97,hr:156,cal:257,cad:157,effort:"Moderate"},
+  {date:"2025-03-30",dist:3.17,time:"0:41:32",pace:"13'05\"",paceMin:13.08,hr:168,cal:288,cad:166,effort:"Hard"},
+];
+
+function fmtDate(d){const dt=new Date(d+'T12:00:00');return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});}
+function fmtFull(d){const dt=new Date(d+'T12:00:00');return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});}
+
+function renderStats(){
+  const totalDist=runs.reduce((s,r)=>s+r.dist,0).toFixed(1);
+  const totalCal=runs.reduce((s,r)=>s+r.cal,0);
+  const avgHR=Math.round(runs.reduce((s,r)=>s+r.hr,0)/runs.length);
+  const best=runs.reduce((b,r)=>r.paceMin<b.paceMin?r:b);
+  const avgP=runs.reduce((s,r)=>s+r.paceMin,0)/runs.length;
+  const longest=runs.reduce((b,r)=>r.dist>b.dist?r:b);
+  const pm=Math.floor(avgP),ps=Math.round((avgP-pm)*60);
+  document.getElementById('stat-grid').innerHTML=`
+    <div class="stat-card green"><div class="stat-label">Total Distance</div><div class="stat-value">${totalDist}</div><div class="stat-sub">miles · ${runs.length} runs</div></div>
+    <div class="stat-card orange"><div class="stat-label">Total Calories</div><div class="stat-value">${totalCal.toLocaleString()}</div><div class="stat-sub">active calories burned</div></div>
+    <div class="stat-card blue"><div class="stat-label">Avg Heart Rate</div><div class="stat-value">${avgHR}</div><div class="stat-sub">bpm average</div></div>
+    <div class="stat-card green"><div class="stat-label">Best Pace</div><div class="stat-value" style="font-size:24px">${best.pace}/mi</div><div class="stat-sub">${fmtDate(best.date)}</div></div>
+    <div class="stat-card blue"><div class="stat-label">Avg Pace</div><div class="stat-value" style="font-size:24px">${pm}'${String(ps).padStart(2,'0')}"/mi</div><div class="stat-sub">per mile</div></div>
+    <div class="stat-card orange"><div class="stat-label">Longest Run</div><div class="stat-value">${longest.dist}</div><div class="stat-sub">mi · ${fmtDate(longest.date)}</div></div>
+  `;
+  document.getElementById('run-count').textContent=runs.length;
+}
+
+function renderTable(){
+  const s=[...runs].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  document.getElementById('run-table').innerHTML=s.map(r=>`<tr class="${r.race?'race-row':''}">
+    <td>${fmtFull(r.date)}${r.race?'<span class="race-marker">🏁 5K</span>':''}</td>
+    <td>${r.dist}</td><td>${r.time}</td>
+    <td class="${r.paceMin<11?'pace-fast':r.paceMin>15?'pace-slow':''}">${r.pace}</td>
+    <td>${r.hr||'—'}</td><td>${r.cal}</td><td>${r.cad||'—'}</td>
+    <td><span class="pill ${r.effort.toLowerCase().replace(' ','')}">${r.effort}</span></td>
+  </tr>`).join('');
+}
+
+const s=[...runs].sort((a,b)=>new Date(a.date)-new Date(b.date));
+const labels=s.map(r=>fmtDate(r.date));
+const opts={responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{display:false},tooltip:{backgroundColor:'#12121a',borderColor:'#1e1e2e',borderWidth:1,titleColor:'#5a5a7a',bodyColor:'#e8e8f0',titleFont:{family:'DM Mono',size:10},bodyFont:{family:'DM Mono',size:12}}},
+  scales:{x:{grid:{color:'#1e1e2e'},ticks:{color:'#5a5a7a',font:{family:'DM Mono',size:9},maxRotation:60,maxTicksLimit:30}},
+          y:{grid:{color:'#1e1e2e'},ticks:{color:'#5a5a7a',font:{family:'DM Mono',size:10}}}}};
+
+new Chart(document.getElementById('distChart'),{type:'bar',data:{labels,datasets:[{
+  data:s.map(r=>r.dist),
+  backgroundColor:s.map(r=>r.race?'rgba(0,255,136,1)':r.dist>=3?'rgba(0,255,136,.75)':r.dist>=2?'rgba(0,255,136,.45)':'rgba(0,255,136,.25)'),
+  borderColor:s.map(r=>r.race?'#00ff88':'rgba(0,255,136,.7)'),borderWidth:1,borderRadius:3
+}]},options:opts});
+
+new Chart(document.getElementById('paceChart'),{type:'line',data:{labels,datasets:[{data:s.map(r=>r.paceMin),borderColor:'#ff6b35',backgroundColor:'rgba(255,107,53,.08)',tension:.3,fill:true,pointBackgroundColor:s.map(r=>r.race?'#00ff88':'#ff6b35'),pointRadius:s.map(r=>r.race?6:2),pointHoverRadius:5}]},options:{...opts,scales:{...opts.scales,y:{...opts.scales.y,reverse:true}}}});
+new Chart(document.getElementById('hrChart'),{type:'line',data:{labels,datasets:[{data:s.map(r=>r.hr),borderColor:'#4d9fff',backgroundColor:'rgba(77,159,255,.08)',tension:.3,fill:true,pointBackgroundColor:'#4d9fff',pointRadius:2,pointHoverRadius:5}]},options:opts});
+new Chart(document.getElementById('calChart'),{type:'bar',data:{labels,datasets:[{data:s.map(r=>r.cal),backgroundColor:'rgba(255,107,53,.4)',borderColor:'#ff6b35',borderWidth:1,borderRadius:3}]},options:opts});
+new Chart(document.getElementById('cadChart'),{type:'line',data:{labels,datasets:[{data:s.map(r=>r.cad||null),borderColor:'#00ff88',backgroundColor:'rgba(0,255,136,.06)',tension:.3,fill:true,pointBackgroundColor:'#00ff88',pointRadius:2,pointHoverRadius:5,spanGaps:true}]},options:opts});
+
+function parsePace(s){const m=s.match(/(\d+)[':'](\d+)/);return m?parseInt(m[1])+parseInt(m[2])/60:10;}
+function addRun(){
+  const date=document.getElementById('f-date').value,dist=parseFloat(document.getElementById('f-dist').value),time=document.getElementById('f-time').value,pace=document.getElementById('f-pace').value,hr=parseInt(document.getElementById('f-hr').value)||0,cal=parseInt(document.getElementById('f-cal').value)||0,cad=parseInt(document.getElementById('f-cad').value)||0,effort=document.getElementById('f-effort').value;
+  if(!date||isNaN(dist)||!pace){alert('Fill in date, distance, and pace.');return;}
+  runs.push({date,dist,time:time||'',pace,paceMin:parsePace(pace),hr,cal,cad,effort});
+  document.getElementById('success-msg').style.display='inline';
+  setTimeout(()=>document.getElementById('success-msg').style.display='none',2500);
+  ['f-date','f-dist','f-time','f-pace','f-hr','f-cal','f-cad'].forEach(id=>document.getElementById(id).value='');
+  renderStats();renderTable();
+}
+renderStats();renderTable();
+</script>
+</body>
+</html>
