@@ -1,0 +1,419 @@
+# “””
+scan_owncloud.py
+
+Phase 1: Peter J Ryan Photography – ownCloud Folder Scanner
+
+Connects to Peter’s ownCloud instance via WebDAV and walks the
+“Peter’s Photos” directory, outputting:
+
+1. A human-readable tree report  (output/folder_report.txt)
+1. A machine-readable JSON file  (output/folder_structure.json)
+
+These outputs are used to decide which folders/files to include
+or exclude before building the photo pipeline and website.
+
+## Setup
+
+1. Place this file inside your project folder (e.g. pjrp_website/).
+1. Make sure a .env file exists in the SAME folder (see .env.example).
+1. In Spyder’s IPython console, install dependencies once:
+   pip install requests python-dotenv
+1. Open this file in Spyder and press F5 (or click Run) to execute.
+1. Check the output/ subfolder for folder_report.txt and
+   folder_structure.json.
+   “””
+
+import json
+import os
+import sys
+import xml.etree.ElementTree as ET
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import quote, unquote
+
+# —————————————————————————
+
+# 1. LOAD .env  (must run before anything reads os.environ)
+
+# —————————————————————————
+
+try:
+from dotenv import load_dotenv
+except ImportError:
+sys.exit(
+“ERROR: ‘python-dotenv’ is not installed.\n”
+“In Spyder’s IPython console run:\n”
+“    pip install python-dotenv\n”
+“Then re-run this script.”
+)
+
+try:
+import requests
+except ImportError:
+sys.exit(
+“ERROR: ‘requests’ is not installed.\n”
+“In Spyder’s IPython console run:\n”
+“    pip install requests\n”
+“Then re-run this script.”
+)
+
+# Resolve the .env file relative to THIS script’s location so it works
+
+# regardless of what Spyder’s working directory is set to.
+
+_SCRIPT_DIR = Path(**file**).resolve().parent
+_ENV_PATH   = _SCRIPT_DIR / “.env”
+
+if not _ENV_PATH.exists():
+sys.exit(
+f”ERROR: .env file not found at:\n  {_ENV_PATH}\n\n”
+“Create it by copying .env.example and filling in your password.\n”
+“See the README or .env.example in the same folder.”
+)
+
+load_dotenv(_ENV_PATH)
+
+# —————————————————————————
+
+# 2. CONFIGURATION  (values come from .env; fallbacks shown for clarity)
+
+# —————————————————————————
+
+OWNCLOUD_BASE_URL = os.environ.get(“OWNCLOUD_BASE_URL”, “https://owncloud.polloanalytics.com”)
+OWNCLOUD_USERNAME = os.environ.get(“OWNCLOUD_USERNAME”, “pryan”)
+OWNCLOUD_PASSWORD = os.environ.get(“OWNCLOUD_PASSWORD”, “”)
+
+# Root folder to scan (relative to the user’s WebDAV root)
+
+START_PATH = os.environ.get(“OWNCLOUD_START_PATH”, “/Peter’s Photos”)
+
+# Where to write output files (relative to this script)
+
+OUTPUT_DIR = _SCRIPT_DIR / “output”
+
+# Image extensions we care about
+
+IMAGE_EXTENSIONS = {
+“.jpg”, “.jpeg”, “.png”, “.tif”, “.tiff”,
+“.cr2”, “.cr3”, “.nef”, “.arw”, “.dng”,
+“.heic”, “.webp”, “.gif”,
+}
+
+# —————————————————————————
+
+# 3. VALIDATE CONFIG
+
+# —————————————————————————
+
+if not OWNCLOUD_PASSWORD:
+sys.exit(
+“ERROR: OWNCLOUD_PASSWORD is not set.\n”
+f”Open {_ENV_PATH} and add:\n”
+“    OWNCLOUD_PASSWORD=your_password_here”
+)
+
+# —————————————————————————
+
+# 4. DATA MODELS
+
+# —————————————————————————
+
+@dataclass
+class PhotoFile:
+name: str
+path: str           # decoded WebDAV path
+size_bytes: int
+last_modified: str
+extension: str
+etag: str = “”
+
+@dataclass
+class FolderNode:
+name: str
+path: str
+folders: list = field(default_factory=list)   # list[FolderNode]
+files:   list = field(default_factory=list)   # list[PhotoFile]
+total_images:     int = 0
+total_size_bytes: int = 0
+
+# —————————————————————————
+
+# 5. WEBDAV HELPERS
+
+# —————————————————————————
+
+_DAV_NS = “DAV:”
+
+def _tag(name: str) -> str:
+return f”{{{_DAV_NS}}}{name}”
+
+def _propfind(session: requests.Session, url: str) -> ET.Element:
+“”“Issue a WebDAV PROPFIND depth=1 and return parsed XML.”””
+headers = {
+“Depth”: “1”,
+“Content-Type”: “application/xml; charset=utf-8”,
+}
+body = (
+‘<?xml version="1.0" encoding="utf-8"?>’
+‘<D:propfind xmlns:D=“DAV:”><D:allprop/></D:propfind>’
+)
+resp = session.request(“PROPFIND”, url, headers=headers, data=body, timeout=30)
+
+```
+if resp.status_code == 401:
+    sys.exit("ERROR: Authentication failed (401). Check OWNCLOUD_PASSWORD in .env.")
+if resp.status_code == 404:
+    sys.exit(
+        f"ERROR: Path not found (404).\nURL: {url}\n"
+        "Check OWNCLOUD_START_PATH in .env."
+    )
+if resp.status_code not in (207, 200):
+    sys.exit(
+        f"ERROR: Unexpected HTTP {resp.status_code}.\n"
+        f"URL: {url}\nResponse: {resp.text[:400]}"
+    )
+return ET.fromstring(resp.content)
+```
+
+def _parse_multistatus(xml_root: ET.Element) -> list[dict]:
+“”“Extract a flat list of entry dicts from a PROPFIND multistatus body.”””
+entries = []
+for response in xml_root.iter(_tag(“response”)):
+href_el = response.find(_tag(“href”))
+if href_el is None:
+continue
+href = href_el.text or “”
+
+```
+    propstat = response.find(_tag("propstat"))
+    if propstat is None:
+        continue
+    prop = propstat.find(_tag("prop"))
+    if prop is None:
+        continue
+
+    resourcetype   = prop.find(_tag("resourcetype"))
+    is_collection  = (
+        resourcetype is not None
+        and resourcetype.find(_tag("collection")) is not None
+    )
+
+    size_el       = prop.find(_tag("getcontentlength"))
+    size          = int(size_el.text) if size_el is not None and size_el.text else 0
+
+    lm_el         = prop.find(_tag("getlastmodified"))
+    last_modified = lm_el.text if lm_el is not None else ""
+
+    etag_el = prop.find(_tag("getetag"))
+    etag    = (etag_el.text or "").strip('"')
+
+    decoded_path = unquote(href)
+    name         = decoded_path.rstrip("/").split("/")[-1]
+
+    entries.append(dict(
+        href          = href,
+        decoded_path  = decoded_path,
+        name          = name,
+        is_collection = is_collection,
+        size          = size,
+        last_modified = last_modified,
+        etag          = etag,
+    ))
+return entries
+```
+
+# —————————————————————————
+
+# 6. RECURSIVE WALKER
+
+# —————————————————————————
+
+def walk_folder(
+session:     requests.Session,
+dav_base:    str,
+folder_path: str,
+depth:       int = 0,
+) -> FolderNode:
+“””
+Recursively walk a WebDAV folder and return a populated FolderNode tree.
+
+```
+Parameters
+----------
+dav_base    : WebDAV root URL, e.g.
+              "https://owncloud.polloanalytics.com/remote.php/dav/files/pryan"
+folder_path : Decoded path relative to dav_base, e.g. "/Peter's Photos"
+depth       : Current recursion depth (for indented console output)
+"""
+# Percent-encode each path segment individually (preserves slashes)
+encoded_path = "/".join(
+    quote(seg, safe="") for seg in folder_path.split("/")
+)
+url = dav_base.rstrip("/") + encoded_path
+
+print("  " * depth + f"📂 Scanning: {folder_path}")
+
+xml_root = _propfind(session, url)
+entries  = _parse_multistatus(xml_root)
+
+folder_name = folder_path.rstrip("/").split("/")[-1] or "root"
+node = FolderNode(name=folder_name, path=folder_path)
+
+for entry in entries:
+    # Skip the folder itself (always the first entry at depth=1)
+    if entry["decoded_path"].rstrip("/") == unquote(encoded_path).rstrip("/"):
+        continue
+
+    if entry["is_collection"]:
+        child_path = folder_path.rstrip("/") + "/" + entry["name"]
+        child_node = walk_folder(session, dav_base, child_path, depth + 1)
+        node.folders.append(child_node)
+        node.total_images     += child_node.total_images
+        node.total_size_bytes += child_node.total_size_bytes
+    else:
+        ext = Path(entry["name"]).suffix.lower()
+        if ext in IMAGE_EXTENSIONS:
+            photo = PhotoFile(
+                name          = entry["name"],
+                path          = entry["decoded_path"],
+                size_bytes    = entry["size"],
+                last_modified = entry["last_modified"],
+                extension     = ext,
+                etag          = entry["etag"],
+            )
+            node.files.append(photo)
+            node.total_images     += 1
+            node.total_size_bytes += entry["size"]
+
+return node
+```
+
+# —————————————————————————
+
+# 7. REPORT WRITERS
+
+# —————————————————————————
+
+def _fmt_size(b: int) -> str:
+for unit in (“B”, “KB”, “MB”, “GB”):
+if b < 1024:
+return f”{b:.1f} {unit}”
+b /= 1024
+return f”{b:.1f} TB”
+
+def _tree_lines(node: FolderNode, indent: int = 0) -> list[str]:
+pad     = “  “ * indent
+summary = f”  [{node.total_images} images, {_fmt_size(node.total_size_bytes)}]”
+lines   = [f”{pad}📂 {node.name}{summary}”]
+for sub in node.folders:
+lines.extend(_tree_lines(sub, indent + 1))
+for img in node.files:
+lines.append(
+f”{’  ’ * (indent + 1)}🖼  {img.name}”
+f”  ({_fmt_size(img.size_bytes)})  [{img.last_modified}]”
+)
+return lines
+
+def write_text_report(root: FolderNode, dest: Path) -> None:
+lines = [
+“=” * 72,
+“Peter J Ryan Photography – ownCloud Folder Report”,
+f”Generated : {datetime.now().strftime(’%Y-%m-%d %H:%M:%S’)}”,
+f”Root path : {root.path}”,
+f”Total images : {root.total_images}”,
+f”Total size   : {_fmt_size(root.total_size_bytes)}”,
+“=” * 72,
+“”,
+“FOLDER TREE”,
+“-” * 72,
+]
+lines.extend(_tree_lines(root))
+lines += [
+“”,
+“-” * 72,
+“TOP-LEVEL FOLDER SUMMARY”,
+“-” * 72,
+]
+for folder in sorted(root.folders, key=lambda f: f.total_images, reverse=True):
+lines.append(
+f”  {folder.name:<40} {folder.total_images:>5} images”
+f”   {_fmt_size(folder.total_size_bytes):>10}”
+)
+lines += [
+“”,
+“NEXT STEPS”,
+“-” * 72,
+“  1. Review this tree and note folders to EXCLUDE (e.g. Medical,”,
+“     Family, HS Drawings, Nancy Cashman).”,
+“  2. Add excluded folder names to EXCLUDE_FOLDERS in your .env”,
+“     or directly in build_catalog.py (Phase 2).”,
+“  3. Run Phase 2: build_catalog.py to extract EXIF data and”,
+“     generate AI tags + scores.”,
+]
+dest.write_text(”\n”.join(lines) + “\n”, encoding=“utf-8”)
+print(f”\n✅ Text report  → {dest}”)
+
+def write_json_report(root: FolderNode, dest: Path) -> None:
+def _node(n: FolderNode) -> dict:
+return {
+“name”:             n.name,
+“path”:             n.path,
+“total_images”:     n.total_images,
+“total_size_bytes”: n.total_size_bytes,
+“folders”:          [_node(f) for f in n.folders],
+“files”:            [asdict(f) for f in n.files],
+}
+payload = {
+“generated_at”:  datetime.now().isoformat(),
+“owncloud_base”: OWNCLOUD_BASE_URL,
+“username”:      OWNCLOUD_USERNAME,
+“root”:          _node(root),
+}
+dest.write_text(json.dumps(payload, indent=2), encoding=“utf-8”)
+print(f”✅ JSON structure → {dest}”)
+
+# —————————————————————————
+
+# 8. MAIN  (runs when you press F5 in Spyder)
+
+# —————————————————————————
+
+def main() -> None:
+dav_base = (
+f”{OWNCLOUD_BASE_URL.rstrip(’/’)}”
+f”/remote.php/dav/files/{OWNCLOUD_USERNAME}”
+)
+
+```
+print("\n" + "=" * 60)
+print("Peter J Ryan Photography – Phase 1: Folder Scanner")
+print("=" * 60)
+print(f"  ownCloud URL : {OWNCLOUD_BASE_URL}")
+print(f"  Username     : {OWNCLOUD_USERNAME}")
+print(f"  Start path   : {START_PATH}")
+print(f"  Output dir   : {OUTPUT_DIR}")
+print("-" * 60)
+
+session        = requests.Session()
+session.auth   = (OWNCLOUD_USERNAME, OWNCLOUD_PASSWORD)
+session.verify = True   # set False only if you have self-signed cert issues
+
+root_node = walk_folder(session, dav_base, START_PATH)
+
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+write_text_report(root_node, OUTPUT_DIR / "folder_report.txt")
+write_json_report(root_node, OUTPUT_DIR / "folder_structure.json")
+
+print("\n" + "=" * 60)
+print("SUMMARY")
+print("=" * 60)
+print(f"  Total images : {root_node.total_images}")
+print(f"  Total size   : {_fmt_size(root_node.total_size_bytes)}")
+print(f"  Top-level folders ({len(root_node.folders)} total):")
+for f in sorted(root_node.folders, key=lambda x: x.total_images, reverse=True):
+    print(f"    {f.name:<40} {f.total_images:>5} images")
+print()
+```
+
+main()
