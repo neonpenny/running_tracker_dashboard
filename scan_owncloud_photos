@@ -1,0 +1,452 @@
+# #!/usr/bin/env python3
+“””
+scan_owncloud.py
+
+Phase 1: Peter J Ryan Photography – ownCloud Folder Scanner
+
+Connects to Peter’s ownCloud instance via WebDAV and walks the
+“Peter’s Photos” directory, outputting:
+
+1. A human-readable tree report  (folder_report.txt)
+1. A machine-readable JSON file  (folder_structure.json)
+
+These outputs are used to decide which folders/files to include
+or exclude before building the photo pipeline and website.
+
+## Usage
+
+```
+pip install requests
+python scan_owncloud.py
+
+# Or supply credentials on the command line (overrides the
+# constants defined below):
+python scan_owncloud.py --username pryan --password YOUR_PASSWORD
+```
+
+## Configuration
+
+Fill in OWNCLOUD_PASSWORD below, or pass it as a CLI argument.
+Everything else is pre-configured for Peter’s setup.
+“””
+
+import argparse
+import json
+import sys
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+try:
+import requests
+except ImportError:
+sys.exit(
+“ERROR: ‘requests’ is not installed.\n”
+“Run:  pip install requests\n”
+“Then re-run this script.”
+)
+
+# —————————————————————————
+
+# CONFIGURATION – edit these or supply via CLI flags
+
+# —————————————————————————
+
+OWNCLOUD_BASE_URL  = “https://owncloud.polloanalytics.com”
+OWNCLOUD_USERNAME  = “pryan”
+OWNCLOUD_PASSWORD  = “”           # ← fill in, or use –password flag
+
+# The root folder we want to scan (relative to the WebDAV root)
+
+START_PATH = “/Peter’s Photos”
+
+# Image extensions we care about
+
+IMAGE_EXTENSIONS = {
+“.jpg”, “.jpeg”, “.png”, “.tif”, “.tiff”,
+“.cr2”, “.cr3”, “.nef”, “.arw”, “.dng”,
+“.heic”, “.webp”, “.gif”,
+}
+
+# Output file names (written to the same directory as this script)
+
+OUTPUT_JSON = “folder_structure.json”
+OUTPUT_TEXT = “folder_report.txt”
+
+# —————————————————————————
+
+# DATA MODELS
+
+# —————————————————————————
+
+@dataclass
+class PhotoFile:
+name: str
+path: str          # full WebDAV path
+size_bytes: int
+last_modified: str
+extension: str
+etag: str = “”
+
+@dataclass
+class FolderNode:
+name: str
+path: str
+folders: list = field(default_factory=list)   # list[FolderNode]
+files: list   = field(default_factory=list)   # list[PhotoFile]
+total_images: int = 0
+total_size_bytes: int = 0
+
+# —————————————————————————
+
+# WEBDAV CLIENT
+
+# —————————————————————————
+
+WEBDAV_NS = “DAV:”
+
+def _tag(name: str) -> str:
+return f”{{{WEBDAV_NS}}}{name}”
+
+def propfind(session: requests.Session, url: str, depth: int = 1) -> ET.Element:
+“”“Issue a WebDAV PROPFIND request and return the parsed XML root.”””
+headers = {
+“Depth”: str(depth),
+“Content-Type”: “application/xml; charset=utf-8”,
+}
+body = (
+‘<?xml version="1.0" encoding="utf-8"?>’
+‘<D:propfind xmlns:D=“DAV:”>’
+“  <D:allprop/>”
+“</D:propfind>”
+)
+resp = session.request(“PROPFIND”, url, headers=headers, data=body, timeout=30)
+
+```
+if resp.status_code == 401:
+    sys.exit(
+        "ERROR: Authentication failed (401).\n"
+        "Check your username and password."
+    )
+if resp.status_code == 404:
+    sys.exit(
+        f"ERROR: Path not found (404): {url}\n"
+        "Check that the START_PATH is correct."
+    )
+if resp.status_code not in (207, 200):
+    sys.exit(
+        f"ERROR: Unexpected HTTP {resp.status_code} from server.\n"
+        f"URL: {url}\nBody: {resp.text[:500]}"
+    )
+
+return ET.fromstring(resp.content)
+```
+
+def parse_responses(xml_root: ET.Element, base_dav_url: str):
+“””
+Parse a multistatus PROPFIND response.
+Returns a list of dicts with keys: href, is_collection, name,
+size, last_modified, etag.
+“””
+results = []
+for response in xml_root.iter(_tag(“response”)):
+href_el = response.find(_tag(“href”))
+if href_el is None:
+continue
+href = href_el.text or “”
+
+```
+    propstat = response.find(_tag("propstat"))
+    if propstat is None:
+        continue
+    prop = propstat.find(_tag("prop"))
+    if prop is None:
+        continue
+
+    resourcetype = prop.find(_tag("resourcetype"))
+    is_collection = resourcetype is not None and resourcetype.find(_tag("collection")) is not None
+
+    size_el = prop.find(_tag("getcontentlength"))
+    size = int(size_el.text) if size_el is not None and size_el.text else 0
+
+    lm_el = prop.find(_tag("getlastmodified"))
+    last_modified = lm_el.text if lm_el is not None else ""
+
+    etag_el = prop.find(_tag("getetag"))
+    etag = (etag_el.text or "").strip('"')
+
+    # Decode percent-encoded href and strip the DAV root prefix
+    from urllib.parse import unquote
+    path = unquote(href)
+
+    # Extract the display name from the path
+    name = path.rstrip("/").split("/")[-1]
+
+    results.append(
+        dict(
+            href=href,
+            path=path,
+            name=name,
+            is_collection=is_collection,
+            size=size,
+            last_modified=last_modified,
+            etag=etag,
+        )
+    )
+return results
+```
+
+# —————————————————————————
+
+# RECURSIVE WALKER
+
+# —————————————————————————
+
+def walk_folder(
+session: requests.Session,
+dav_base: str,
+folder_path: str,
+depth: int = 0,
+max_depth: Optional[int] = None,
+) -> FolderNode:
+“””
+Recursively walk a WebDAV folder and return a FolderNode tree.
+
+```
+Parameters
+----------
+dav_base    : e.g. "https://owncloud.polloanalytics.com/remote.php/dav/files/pryan"
+folder_path : path relative to dav_base, e.g. "/Peter's Photos"
+depth       : current recursion depth (used for progress display)
+max_depth   : if set, stop recursing deeper than this level
+"""
+from urllib.parse import quote
+
+# Encode the path for the URL (preserve slashes)
+encoded_path = "/".join(quote(segment, safe="") for segment in folder_path.split("/"))
+url = dav_base.rstrip("/") + encoded_path
+
+indent = "  " * depth
+print(f"{indent}📂 Scanning: {folder_path}")
+
+xml_root = propfind(session, url, depth=1)
+entries = parse_responses(xml_root, dav_base)
+
+folder_name = folder_path.rstrip("/").split("/")[-1] or "root"
+node = FolderNode(name=folder_name, path=folder_path)
+
+for entry in entries:
+    # Skip the folder itself (the first entry in PROPFIND depth=1)
+    if entry["path"].rstrip("/") == encoded_path.rstrip("/"):
+        continue
+    # Also skip if the decoded path matches
+    from urllib.parse import unquote
+    if unquote(entry["path"]).rstrip("/") == folder_path.rstrip("/"):
+        continue
+
+    if entry["is_collection"]:
+        # It's a sub-folder
+        child_path = folder_path.rstrip("/") + "/" + entry["name"]
+        if max_depth is None or depth < max_depth:
+            child_node = walk_folder(
+                session, dav_base, child_path, depth + 1, max_depth
+            )
+            node.folders.append(child_node)
+            node.total_images    += child_node.total_images
+            node.total_size_bytes += child_node.total_size_bytes
+        else:
+            # Just record the folder name without recursing
+            stub = FolderNode(name=entry["name"], path=child_path)
+            node.folders.append(stub)
+    else:
+        # It's a file – only track image files
+        ext = Path(entry["name"]).suffix.lower()
+        if ext in IMAGE_EXTENSIONS:
+            photo = PhotoFile(
+                name=entry["name"],
+                path=entry["path"],
+                size_bytes=entry["size"],
+                last_modified=entry["last_modified"],
+                extension=ext,
+                etag=entry["etag"],
+            )
+            node.files.append(photo)
+            node.total_images    += 1
+            node.total_size_bytes += entry["size"]
+
+return node
+```
+
+# —————————————————————————
+
+# REPORT GENERATORS
+
+# —————————————————————————
+
+def *fmt_size(bytes*: int) -> str:
+for unit in (“B”, “KB”, “MB”, “GB”):
+if bytes_ < 1024:
+return f”{bytes_:.1f} {unit}”
+bytes_ /= 1024
+return f”{bytes_:.1f} TB”
+
+def render_tree(node: FolderNode, indent: int = 0) -> list[str]:
+“”“Return lines of a human-readable folder tree.”””
+lines = []
+pad = “  “ * indent
+summary = f”  [{node.total_images} images, {_fmt_size(node.total_size_bytes)}]”
+lines.append(f”{pad}📂 {node.name}{summary}”)
+
+```
+for f in node.folders:
+    lines.extend(render_tree(f, indent + 1))
+
+for img in node.files:
+    file_pad = "  " * (indent + 1)
+    lines.append(
+        f"{file_pad}🖼  {img.name}  ({_fmt_size(img.size_bytes)})  "
+        f"[{img.last_modified}]"
+    )
+
+return lines
+```
+
+def write_text_report(root: FolderNode, path: str) -> None:
+lines = [
+“=” * 72,
+“Peter J Ryan Photography – ownCloud Folder Report”,
+f”Generated: {datetime.now().strftime(’%Y-%m-%d %H:%M:%S’)}”,
+f”Root path: {root.path}”,
+f”Total images found: {root.total_images}”,
+f”Total size: {_fmt_size(root.total_size_bytes)}”,
+“=” * 72,
+“”,
+“FOLDER TREE”,
+“-” * 72,
+]
+lines.extend(render_tree(root))
+lines += [
+“”,
+“-” * 72,
+“TOP-LEVEL FOLDER SUMMARY”,
+“-” * 72,
+]
+for folder in root.folders:
+lines.append(
+f”  {folder.name:<40} {folder.total_images:>5} images   “
+f”{_fmt_size(folder.total_size_bytes):>10}”
+)
+lines += [
+“”,
+“NOTE: Edit scan_owncloud.py to add folders to an EXCLUDE list,”,
+“      then re-run to get a filtered version for the website pipeline.”,
+]
+with open(path, “w”, encoding=“utf-8”) as fh:
+fh.write(”\n”.join(lines) + “\n”)
+print(f”\n✅ Text report written to: {path}”)
+
+def write_json_report(root: FolderNode, path: str) -> None:
+def node_to_dict(n: FolderNode) -> dict:
+return {
+“name”: n.name,
+“path”: n.path,
+“total_images”: n.total_images,
+“total_size_bytes”: n.total_size_bytes,
+“folders”: [node_to_dict(f) for f in n.folders],
+“files”: [asdict(f) for f in n.files],
+}
+
+```
+data = {
+    "generated_at": datetime.now().isoformat(),
+    "owncloud_base": OWNCLOUD_BASE_URL,
+    "username": OWNCLOUD_USERNAME,
+    "root": node_to_dict(root),
+}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+print(f"✅ JSON structure written to: {path}")
+```
+
+# —————————————————————————
+
+# MAIN
+
+# —————————————————————————
+
+def main():
+parser = argparse.ArgumentParser(
+description=“Scan Peter’s ownCloud photo library and output folder structure.”
+)
+parser.add_argument(”–username”, default=OWNCLOUD_USERNAME)
+parser.add_argument(”–password”, default=OWNCLOUD_PASSWORD)
+parser.add_argument(
+“–start-path”, default=START_PATH,
+help=“WebDAV path to scan (default: /Peter’s Photos)”
+)
+parser.add_argument(
+“–max-depth”, type=int, default=None,
+help=“Max folder depth to recurse (default: unlimited)”
+)
+parser.add_argument(
+“–output-dir”, default=”.”,
+help=“Directory to write output files (default: current directory)”
+)
+args = parser.parse_args()
+
+```
+password = args.password
+if not password:
+    import getpass
+    password = getpass.getpass(
+        f"Enter ownCloud password for user '{args.username}': "
+    )
+
+# WebDAV endpoint for ownCloud 10.x
+dav_base = f"{OWNCLOUD_BASE_URL}/remote.php/dav/files/{args.username}"
+
+session = requests.Session()
+session.auth = (args.username, password)
+session.verify = True   # set to False if you have SSL cert issues (not recommended)
+
+print(f"\n🔗 Connecting to: {OWNCLOUD_BASE_URL}")
+print(f"👤 Username: {args.username}")
+print(f"📁 Scanning from: {args.start_path}")
+print(f"{'─' * 60}")
+
+root_node = walk_folder(
+    session,
+    dav_base,
+    args.start_path,
+    depth=0,
+    max_depth=args.max_depth,
+)
+
+out_dir = Path(args.output_dir)
+out_dir.mkdir(parents=True, exist_ok=True)
+
+write_text_report(root_node, str(out_dir / OUTPUT_TEXT))
+write_json_report(root_node, str(out_dir / OUTPUT_JSON))
+
+# Quick console summary
+print(f"\n{'=' * 60}")
+print(f"SUMMARY")
+print(f"{'=' * 60}")
+print(f"  Total images found : {root_node.total_images}")
+print(f"  Total size         : {_fmt_size(root_node.total_size_bytes)}")
+print(f"  Top-level folders  : {len(root_node.folders)}")
+print()
+print("  Top-level breakdown:")
+for f in sorted(root_node.folders, key=lambda x: x.total_images, reverse=True):
+    print(f"    {f.name:<40} {f.total_images:>5} images")
+print()
+print("Next steps:")
+print("  1. Review folder_report.txt for the full tree.")
+print("  2. Decide which folders to include / exclude.")
+print("  3. Run Phase 2: photo metadata + AI tagging pipeline.")
+```
+
+if **name** == “**main**”:
+main()
